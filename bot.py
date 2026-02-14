@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Mod Bot - Единый файл
+Telegram Mod Bot - Единый файл (без cachetools)
 Просто скопируйте этот код в bot.py и запустите!
 """
 
@@ -10,8 +10,9 @@ import sqlite3
 import json
 import logging
 import asyncio
+import time
 from datetime import datetime, timedelta
-from cachetools import TTLCache
+from collections import defaultdict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from telegram.ext import (
@@ -21,7 +22,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 # ==================== НАСТРОЙКИ ====================
-BOT_TOKEN = "8057838212:AAGXJcxc4hEk5qzVjK37IocVDPC_hxj8nwA"  # ВСТАВЬТЕ СВОЙ ТОКЕН СЮДА
+BOT_TOKEN = "8032712809:AAFcmS1G4xKURy2MZ9izAK8Ne8HXg8EIr8I"  # ВСТАВЬТЕ СВОЙ ТОКЕН СЮДА
 
 # Настройки по умолчанию
 DEFAULT_WARN_LIMIT = 3
@@ -41,6 +42,34 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# ==================== ПРОСТОЙ КЭШ ДЛЯ АНТИФЛУДА (вместо cachetools) ====================
+class SimpleCache:
+    def __init__(self, maxsize=10000, ttl=60):
+        self.maxsize = maxsize
+        self.ttl = ttl
+        self.cache = {}
+        self.timestamps = {}
+    
+    def __contains__(self, key):
+        self._cleanup()
+        return key in self.cache
+    
+    def __getitem__(self, key):
+        self._cleanup()
+        return self.cache.get(key, [])
+    
+    def __setitem__(self, key, value):
+        self._cleanup()
+        self.cache[key] = value
+        self.timestamps[key] = time.time()
+    
+    def _cleanup(self):
+        now = time.time()
+        expired = [k for k, ts in self.timestamps.items() if now - ts > self.ttl]
+        for k in expired:
+            del self.cache[k]
+            del self.timestamps[k]
 
 # ==================== БАЗА ДАННЫХ (SQLite) ====================
 class Database:
@@ -289,7 +318,7 @@ async def is_admin(update, context, user_id=None):
 
 # ==================== ИНИЦИАЛИЗАЦИЯ БД И КЭША ====================
 db = Database()
-flood_cache = TTLCache(maxsize=10000, ttl=60)
+flood_cache = SimpleCache(maxsize=10000, ttl=60)
 
 # ==================== КОМАНДЫ МОДЕРАЦИИ ====================
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -703,7 +732,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await message.delete()
         except:
-            pass
         return
     
     db.update_user_stats(chat.id, user.id, user.username, user.first_name)
@@ -716,9 +744,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cache_key not in flood_cache:
             flood_cache[cache_key] = []
         
-        current_time = datetime.now().timestamp()
+        current_time = time.time()
         flood_cache[cache_key].append(current_time)
         
+        # Оставляем только сообщения за последние N секунд
         flood_cache[cache_key] = [
             t for t in flood_cache[cache_key] 
             if current_time - t <= settings.get('antiflood_seconds', 10)
